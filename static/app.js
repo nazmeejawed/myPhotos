@@ -279,9 +279,24 @@ cancelMergeBtn.addEventListener("click", cancelMerge);
 
 /* ----------------------------------------------------------- view actions */
 
+// Icon-only action buttons; the state is conveyed by the icon + title tooltip.
+const ICONS = {
+  aspect34:
+    '<svg width="20" height="20" viewBox="0 0 20 20"><rect x="5.5" y="2.5" width="9" height="15" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+  aspect43:
+    '<svg width="20" height="20" viewBox="0 0 20 20"><rect x="2.5" y="5.5" width="15" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+  eye:
+    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff:
+    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="20" x2="20" y2="4"/></svg>',
+};
+
 function applyViewSettings() {
-  aspectToggle.textContent = aspect === "34" ? "Preview 3:4" : "Preview 4:3";
-  boxesToggle.textContent = showBoxes ? "Hide face boxes" : "Show face boxes";
+  aspectToggle.innerHTML = aspect === "34" ? ICONS.aspect34 : ICONS.aspect43;
+  aspectToggle.title =
+    aspect === "34" ? "Preview aspect 3:4 — click for 4:3" : "Preview aspect 4:3 — click for 3:4";
+  boxesToggle.innerHTML = showBoxes ? ICONS.eye : ICONS.eyeOff;
+  boxesToggle.title = showBoxes ? "Hide face boxes and names" : "Show face boxes and names";
   document.body.classList.toggle("no-boxes", !showBoxes);
 }
 
