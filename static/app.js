@@ -20,10 +20,16 @@ const lightboxFrame = document.getElementById("lightbox-frame");
 const lightboxImg = document.getElementById("lightbox-img");
 const lightboxCaption = document.getElementById("lightbox-caption");
 
+const aspectToggle = document.getElementById("aspect-toggle");
+const boxesToggle = document.getElementById("boxes-toggle");
+
 let activePersonId = null;
 let mergeSourceId = null;
 let personsCache = [];
 let pollTimer = null;
+// Persisted view settings: preview aspect ratio and face-box visibility.
+let aspect = localStorage.getItem("aspect") === "43" ? "43" : "34";
+let showBoxes = localStorage.getItem("showBoxes") !== "0";
 
 async function api(url, options) {
   const res = await fetch(url, options);
@@ -75,16 +81,18 @@ function escapeHtml(s) {
 let lastPhotos = [];
 
 async function loadPhotos() {
-  const q = activePersonId != null ? `?person_id=${activePersonId}` : "";
-  const photos = await api(`/api/photos${q}`);
+  const params = new URLSearchParams({ aspect });
+  if (activePersonId != null) params.set("person_id", activePersonId);
+  const photos = await api(`/api/photos?${params}`);
   lastPhotos = photos;
 
+  gallery.classList.toggle("aspect-43", aspect === "43");
   gallery.innerHTML = photos
     .map(
       (p) => `
       <div class="card" data-photo-id="${p.id}">
         <div class="photo-frame">
-          <img src="/api/thumb/${p.id}" loading="lazy" alt="${escapeHtml(p.filename)}">
+          <img src="/api/thumb/${p.id}?aspect=${aspect}" loading="lazy" alt="${escapeHtml(p.filename)}">
           ${faceBoxesHtml(p, p.crop)}
         </div>
         <div class="card-filename" title="${escapeHtml(p.path)}">${escapeHtml(p.filename)}</div>
@@ -269,6 +277,27 @@ async function deletePerson(personId) {
 
 cancelMergeBtn.addEventListener("click", cancelMerge);
 
+/* ----------------------------------------------------------- view actions */
+
+function applyViewSettings() {
+  aspectToggle.textContent = aspect === "34" ? "Preview 3:4" : "Preview 4:3";
+  boxesToggle.textContent = showBoxes ? "Hide face boxes" : "Show face boxes";
+  document.body.classList.toggle("no-boxes", !showBoxes);
+}
+
+aspectToggle.addEventListener("click", async () => {
+  aspect = aspect === "34" ? "43" : "34";
+  localStorage.setItem("aspect", aspect);
+  applyViewSettings();
+  await loadPhotos();
+});
+
+boxesToggle.addEventListener("click", () => {
+  showBoxes = !showBoxes;
+  localStorage.setItem("showBoxes", showBoxes ? "1" : "0");
+  applyViewSettings();
+});
+
 /* -------------------------------------------------------------- analysis */
 
 analyzeBtn.addEventListener("click", async () => {
@@ -346,6 +375,7 @@ document.addEventListener("keydown", (e) => {
   const params = new URLSearchParams(location.search);
   if (params.get("person")) activePersonId = Number(params.get("person"));
 
+  applyViewSettings();
   await refreshAll();
 
   if (params.get("photo")) {

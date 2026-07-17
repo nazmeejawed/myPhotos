@@ -171,6 +171,9 @@ body {
   background: #000;
   overflow: hidden;
 }
+.gallery.aspect-43 .photo-frame { aspect-ratio: 4 / 3; }
+
+body.no-boxes .face-box { display: none; }
 .photo-frame img {
   display: block;
   width: 100%;
@@ -236,6 +239,21 @@ body {
   letter-spacing: 0.08em;
   color: var(--muted);
 }
+.sidebar-title + .actions { margin-bottom: 18px; }
+
+.actions { display: flex; flex-direction: column; gap: 8px; }
+
+.action-btn {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.action-btn:hover { border-color: var(--accent); }
 
 .persons { display: flex; flex-direction: column; gap: 8px; }
 
