@@ -11,7 +11,9 @@ from database import get_db, init_db
 from paths import default_photos_dir, resource_dir
 
 DEFAULT_FOLDER = default_photos_dir()
-THUMB_SIZE = 480
+# Thumbnails are 3:4 crops centered on the detected faces.
+THUMB_ASPECT = 3 / 4
+THUMB_MAX = (450, 600)
 PORTRAIT_SIZE = 128
 
 app = Flask(__name__, static_folder=os.path.join(resource_dir(), "static"))
@@ -45,6 +47,31 @@ def analyze():
 @app.get("/api/progress")
 def progress():
     return jsonify(analyzer.get_progress())
+
+
+def compute_crop(width, height, faces):
+    """3:4 crop window centered on the faces' bounding box (or the middle).
+
+    Returned in original-image coordinates; the same window is used by the
+    thumbnail endpoint and by the frontend to place face boxes on previews.
+    """
+    if width / height > THUMB_ASPECT:
+        crop_w, crop_h = round(height * THUMB_ASPECT), height
+    else:
+        crop_w, crop_h = width, round(width / THUMB_ASPECT)
+
+    if faces:
+        x1 = min(f["x"] for f in faces)
+        y1 = min(f["y"] for f in faces)
+        x2 = max(f["x"] + f["w"] for f in faces)
+        y2 = max(f["y"] + f["h"] for f in faces)
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    else:
+        cx, cy = width / 2, height / 2
+
+    x = min(max(round(cx - crop_w / 2), 0), width - crop_w)
+    y = min(max(round(cy - crop_h / 2), 0), height - crop_h)
+    return {"x": x, "y": y, "w": crop_w, "h": crop_h}
 
 
 @app.get("/api/photos")
@@ -87,6 +114,7 @@ def photos():
                 "width": p["width"],
                 "height": p["height"],
                 "faces": faces_by_photo.get(p["id"], []),
+                "crop": compute_crop(p["width"], p["height"], faces_by_photo.get(p["id"], [])),
             }
             for p in rows
         ]
@@ -176,9 +204,19 @@ def _jpeg_response(image):
 @app.get("/api/thumb/<int:photo_id>")
 def thumb(photo_id):
     row = _load_photo(photo_id)
+    db = get_db()
+    faces = [
+        dict(f)
+        for f in db.execute(
+            "SELECT x, y, w, h FROM faces WHERE photo_id = ?", (photo_id,)
+        ).fetchall()
+    ]
+    db.close()
+    crop = compute_crop(row["width"], row["height"], faces)
     with Image.open(row["path"]) as img:
         img = ImageOps.exif_transpose(img)
-        img.thumbnail((THUMB_SIZE, THUMB_SIZE))
+        img = img.crop((crop["x"], crop["y"], crop["x"] + crop["w"], crop["y"] + crop["h"]))
+        img.thumbnail(THUMB_MAX)
         return _jpeg_response(img)
 
 

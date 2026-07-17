@@ -46,13 +46,16 @@ function personColor(id, alpha = 1) {
 
 /* ------------------------------------------------------------- rendering */
 
-function faceBoxesHtml(photo) {
+// rect is the visible window in original-image coordinates: the 3:4 thumbnail
+// crop for grid cards, or the whole image for the lightbox.
+function faceBoxesHtml(photo, rect) {
+  rect = rect || { x: 0, y: 0, w: photo.width, h: photo.height };
   return photo.faces
     .map((f) => {
-      const left = (f.x / photo.width) * 100;
-      const top = (f.y / photo.height) * 100;
-      const w = (f.w / photo.width) * 100;
-      const h = (f.h / photo.height) * 100;
+      const left = ((f.x - rect.x) / rect.w) * 100;
+      const top = ((f.y - rect.y) / rect.h) * 100;
+      const w = (f.w / rect.w) * 100;
+      const h = (f.h / rect.h) * 100;
       const name = f.person_name || "Unknown";
       const border = personColor(f.person_id);
       const fill = personColor(f.person_id, 0.24);
@@ -82,7 +85,7 @@ async function loadPhotos() {
       <div class="card" data-photo-id="${p.id}">
         <div class="photo-frame">
           <img src="/api/thumb/${p.id}" loading="lazy" alt="${escapeHtml(p.filename)}">
-          ${faceBoxesHtml(p)}
+          ${faceBoxesHtml(p, p.crop)}
         </div>
         <div class="card-filename" title="${escapeHtml(p.path)}">${escapeHtml(p.filename)}</div>
       </div>`

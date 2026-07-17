@@ -167,12 +167,15 @@ body {
 .photo-frame {
   position: relative;
   width: 100%;
+  aspect-ratio: 3 / 4;
   background: #000;
+  overflow: hidden;
 }
 .photo-frame img {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: cover;
 }
 
 .face-box {
@@ -330,12 +333,16 @@ body {
 .lightbox .photo-frame {
   display: inline-block;
   width: auto;
+  aspect-ratio: auto;
   background: transparent;
+  overflow: visible;
 }
 .lightbox .photo-frame img {
   width: auto;
+  height: auto;
   max-width: 88vw;
   max-height: 82vh;
+  object-fit: contain;
 }
 
 .lightbox .face-label { font-size: 13px; }
