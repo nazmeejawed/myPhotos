@@ -1,0 +1,304 @@
+"""Recursive photo scanning, face detection (YuNet) and face clustering (SFace)."""
+
+import os
+import threading
+
+import cv2
+import numpy as np
+
+from database import get_db
+from paths import resource_dir
+
+MODELS_DIR = os.path.join(resource_dir(), "models")
+DETECTOR_MODEL = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
+RECOGNIZER_MODEL = os.path.join(MODELS_DIR, "face_recognition_sface_2021dec.onnx")
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+
+# Cosine similarity threshold for the live (greedy, mean-linkage) assignment
+# used while a run is in progress.
+GREEDY_THRESHOLD = 0.32
+# Threshold for the final average-linkage re-clustering of all faces. Lower
+# than pairwise verification thresholds because it applies to cluster means.
+CLUSTER_THRESHOLD = 0.28
+# Full re-clustering is O(n^2) memory; above this face count keep greedy results.
+MAX_RECLUSTER_FACES = 4000
+DETECTION_SCORE_THRESHOLD = 0.8
+MAX_DETECTION_SIDE = 1280
+MIN_FACE_SIZE = 24
+# At most this many embeddings per person are kept in memory for matching.
+MAX_EMBEDDINGS_PER_PERSON = 32
+
+
+def scan_image_files(folder):
+    """Return sorted list of image file paths under folder, recursively."""
+    files = []
+    for root, _dirs, names in os.walk(folder):
+        for name in names:
+            if os.path.splitext(name)[1].lower() in IMAGE_EXTENSIONS:
+                files.append(os.path.join(root, name))
+    files.sort()
+    return files
+
+
+def _normalize(vec):
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm > 0 else vec
+
+
+def _average_linkage(embeddings, threshold):
+    """Agglomerative average-linkage clustering on cosine similarities.
+
+    Uses Lance-Williams updates on a full similarity matrix: O(n^2) memory,
+    fine for a few thousand faces. Returns a list of index lists.
+    """
+    n = len(embeddings)
+    sim = embeddings @ embeddings.T
+    np.fill_diagonal(sim, -2.0)
+    sizes = np.ones(n)
+    members = {i: [i] for i in range(n)}
+    active = np.ones(n, dtype=bool)
+
+    while True:
+        idx = np.flatnonzero(active)
+        if len(idx) < 2:
+            break
+        sub = sim[np.ix_(idx, idx)]
+        flat = int(np.argmax(sub))
+        i_, j_ = divmod(flat, len(idx))
+        if sub[i_, j_] < threshold:
+            break
+        i, j = int(idx[i_]), int(idx[j_])
+
+        merged_row = (sizes[i] * sim[i] + sizes[j] * sim[j]) / (sizes[i] + sizes[j])
+        sim[i, :] = merged_row
+        sim[:, i] = merged_row
+        sim[i, i] = -2.0
+        sim[j, :] = -2.0
+        sim[:, j] = -2.0
+        sizes[i] += sizes[j]
+        members[i].extend(members.pop(j))
+        active[j] = False
+
+    return [members[i] for i in np.flatnonzero(active)]
+
+
+class Analyzer:
+    """Runs analysis in a background thread and exposes progress state."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._thread = None
+        self.progress = {
+            "status": "idle",  # idle | running | done | error
+            "total": 0,
+            "done": 0,
+            "current": "",
+            "error": "",
+        }
+
+    def _set(self, **kwargs):
+        with self._lock:
+            self.progress.update(kwargs)
+
+    def get_progress(self):
+        with self._lock:
+            return dict(self.progress)
+
+    def is_running(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self, folder):
+        if self.is_running():
+            return False
+        self._set(status="running", total=0, done=0, current="", error="")
+        self._thread = threading.Thread(target=self._run, args=(folder,), daemon=True)
+        self._thread.start()
+        return True
+
+    # ---------------------------------------------------------------- core
+
+    def _run(self, folder):
+        try:
+            detector = cv2.FaceDetectorYN.create(
+                DETECTOR_MODEL, "", (320, 320), DETECTION_SCORE_THRESHOLD
+            )
+            recognizer = cv2.FaceRecognizerSF.create(RECOGNIZER_MODEL, "")
+
+            files = scan_image_files(folder)
+            self._set(total=len(files))
+
+            db = get_db()
+            persons = self._load_persons(db)
+
+            for i, path in enumerate(files):
+                self._set(done=i, current=os.path.basename(path))
+                try:
+                    self._process_photo(db, detector, recognizer, persons, path)
+                except Exception as exc:  # noqa: BLE001 - skip unreadable files
+                    print(f"[analyzer] skipping {path}: {exc}")
+
+            self._set(current="Clustering faces…")
+            self._recluster(db)
+            db.close()
+            self._set(status="done", done=len(files), current="")
+        except Exception as exc:  # noqa: BLE001
+            self._set(status="error", error=str(exc))
+
+    def _load_persons(self, db):
+        """Load stored embeddings grouped by person for incremental clustering."""
+        persons = {}
+        rows = db.execute(
+            "SELECT person_id, embedding FROM faces WHERE person_id IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            vec = _normalize(np.frombuffer(row["embedding"], dtype=np.float32))
+            persons.setdefault(row["person_id"], []).append(vec)
+        for embeddings in persons.values():
+            del embeddings[MAX_EMBEDDINGS_PER_PERSON:]
+        return persons
+
+    def _process_photo(self, db, detector, recognizer, persons, path):
+        mtime = os.path.getmtime(path)
+        existing = db.execute("SELECT id, mtime FROM photos WHERE path = ?", (path,)).fetchone()
+        if existing is not None:
+            if abs(existing["mtime"] - mtime) < 1e-6:
+                return  # already analyzed and unchanged
+            # File changed: drop old record, faces cascade away.
+            db.execute("DELETE FROM photos WHERE id = ?", (existing["id"],))
+            db.commit()
+
+        image = cv2.imread(path)
+        if image is None:
+            image = self._read_with_pillow(path)
+        if image is None:
+            raise ValueError("unreadable image")
+
+        height, width = image.shape[:2]
+
+        # Detect on a downscaled copy for speed, map boxes back to full size.
+        scale = 1.0
+        detect_img = image
+        if max(width, height) > MAX_DETECTION_SIDE:
+            scale = MAX_DETECTION_SIDE / max(width, height)
+            detect_img = cv2.resize(image, (round(width * scale), round(height * scale)))
+
+        detector.setInputSize((detect_img.shape[1], detect_img.shape[0]))
+        _, detections = detector.detect(detect_img)
+
+        cur = db.execute(
+            "INSERT INTO photos (path, filename, width, height, mtime) VALUES (?, ?, ?, ?, ?)",
+            (path, os.path.basename(path), width, height, mtime),
+        )
+        photo_id = cur.lastrowid
+
+        if detections is not None:
+            for det in detections:
+                feature = recognizer.feature(recognizer.alignCrop(detect_img, det))
+                embedding = _normalize(feature.flatten().astype(np.float32))
+
+                x, y, w, h = (det[:4] / scale).round().astype(int)
+                x, y = max(x, 0), max(y, 0)
+                w, h = min(w, width - x), min(h, height - y)
+                if w < MIN_FACE_SIZE or h < MIN_FACE_SIZE:
+                    continue
+
+                person_id = self._assign_person(db, persons, embedding)
+                db.execute(
+                    "INSERT INTO faces (photo_id, person_id, x, y, w, h, score, embedding)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (photo_id, person_id, int(x), int(y), int(w), int(h),
+                     float(det[14]), embedding.tobytes()),
+                )
+        db.commit()
+
+    def _assign_person(self, db, persons, embedding):
+        """Greedy mean-linkage match against known persons (live preview only).
+
+        The final grouping is decided by _recluster() at the end of the run.
+        """
+        best_id, best_sim = None, -1.0
+        for person_id, embeddings in persons.items():
+            sim = float(np.mean([np.dot(embedding, e) for e in embeddings]))
+            if sim > best_sim:
+                best_id, best_sim = person_id, sim
+
+        if best_id is not None and best_sim >= GREEDY_THRESHOLD:
+            if len(persons[best_id]) < MAX_EMBEDDINGS_PER_PERSON:
+                persons[best_id].append(embedding)
+            return best_id
+
+        person_id = self._create_person(db)
+        persons[person_id] = [embedding]
+        return person_id
+
+    @staticmethod
+    def _create_person(db):
+        cur = db.execute("INSERT INTO persons (name) VALUES ('')")
+        person_id = cur.lastrowid
+        db.execute("UPDATE persons SET name = ? WHERE id = ?", (f"Persona {person_id}", person_id))
+        return person_id
+
+    # ----------------------------------------------------------- clustering
+
+    def _recluster(self, db):
+        """Re-cluster all faces with average-linkage and remap to existing persons.
+
+        Existing person names survive: each person is matched to the cluster it
+        overlaps most (one-to-one); remaining clusters become new persons.
+        """
+        rows = db.execute("SELECT id, person_id, embedding FROM faces").fetchall()
+        if len(rows) < 2 or len(rows) > MAX_RECLUSTER_FACES:
+            return
+
+        face_ids = [r["id"] for r in rows]
+        old_person = [r["person_id"] for r in rows]
+        embeddings = np.stack(
+            [_normalize(np.frombuffer(r["embedding"], dtype=np.float32)) for r in rows]
+        )
+        clusters = _average_linkage(embeddings, CLUSTER_THRESHOLD)
+
+        # Overlap counts between every cluster and every previous person.
+        overlaps = []  # (count, cluster_index, person_id)
+        for ci, members in enumerate(clusters):
+            counts = {}
+            for m in members:
+                if old_person[m] is not None:
+                    counts[old_person[m]] = counts.get(old_person[m], 0) + 1
+            overlaps.extend((n, ci, pid) for pid, n in counts.items())
+
+        # Greedy one-to-one matching, largest overlap first, so a previously
+        # over-merged person cannot swallow two clusters again.
+        cluster_person = {}
+        used_persons = set()
+        for count, ci, pid in sorted(overlaps, reverse=True):
+            if ci in cluster_person or pid in used_persons:
+                continue
+            cluster_person[ci] = pid
+            used_persons.add(pid)
+
+        for ci, members in enumerate(clusters):
+            pid = cluster_person.get(ci)
+            if pid is None:
+                pid = self._create_person(db)
+            db.executemany(
+                "UPDATE faces SET person_id = ? WHERE id = ?",
+                [(pid, face_ids[m]) for m in members],
+            )
+
+        db.execute(
+            "DELETE FROM persons WHERE id NOT IN (SELECT DISTINCT person_id FROM faces"
+            " WHERE person_id IS NOT NULL)"
+        )
+        db.commit()
+
+    @staticmethod
+    def _read_with_pillow(path):
+        """Fallback reader for formats cv2.imread cannot open."""
+        try:
+            from PIL import Image
+
+            with Image.open(path) as img:
+                return cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
+        except Exception:  # noqa: BLE001
+            return None
