@@ -3,15 +3,24 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>myPhotos</title>
+  <meta name="description" content="myPhotos — AI-powered face cataloging and photo gallery app">
+  <title>myPhotos — Face Cataloging</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📷</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">📷 myPhotos</div>
+    <span id="photo-count" class="photo-count"></span>
     <input id="folder-input" class="folder-input" type="text" spellcheck="false"
            placeholder="Path to a folder with photos…">
     <button id="analyze-btn" class="analyze-btn">Analyze</button>
+    <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Toggle sidebar">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
   </header>
 
   <div id="progress-wrap" class="progress-wrap hidden">
@@ -31,7 +40,9 @@
       </div>
       <div id="gallery" class="gallery"></div>
       <div id="empty-state" class="empty-state hidden">
-        No analyzed photos yet. Pick a folder and press <b>Analyze</b>.
+        <div class="empty-icon">📸</div>
+        <div class="empty-title">No photos analyzed yet</div>
+        <div class="empty-subtitle">Point to a folder with photos and press <b>Analyze</b> to get started</div>
       </div>
     </section>
 
@@ -54,8 +65,10 @@
       </div>
       <div id="lightbox-caption" class="lightbox-caption"></div>
     </div>
+    <div class="lightbox-nav-hint">← → Navigate · Esc Close</div>
   </div>
 
+  <div id="toast-container" class="toast-container"></div>
   <script src="/static/app.js"></script>
 </body>
 </html>

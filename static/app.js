@@ -31,6 +31,22 @@ let pollTimer = null;
 let aspect = localStorage.getItem("aspect") === "43" ? "43" : "34";
 let showBoxes = localStorage.getItem("showBoxes") !== "0";
 
+/* --------------------------------------------------------- toast system */
+
+function showToast(message, type = "info") {
+  const container = document.getElementById("toast-container");
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  const icons = { info: "ℹ️", error: "❌", success: "✅", warning: "⚠️" };
+  toast.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span><span class="toast-msg">${escapeHtml(message)}</span>`;
+  container.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("toast-visible"));
+  setTimeout(() => {
+    toast.classList.remove("toast-visible");
+    toast.addEventListener("transitionend", () => toast.remove());
+  }, 4000);
+}
+
 async function api(url, options) {
   const res = await fetch(url, options);
   const data = await res.json().catch(() => ({}));
@@ -101,6 +117,15 @@ async function loadPhotos() {
     .join("");
 
   emptyState.classList.toggle("hidden", photos.length > 0);
+
+  // Update photo count badge
+  const countEl = document.getElementById("photo-count");
+  if (photos.length > 0) {
+    countEl.textContent = `${photos.length} photo${photos.length === 1 ? "" : "s"}`;
+    countEl.classList.add("visible");
+  } else {
+    countEl.classList.remove("visible");
+  }
 
   gallery.querySelectorAll(".card").forEach((card) => {
     const photo = photos.find((p) => p.id === Number(card.dataset.photoId));
@@ -203,7 +228,7 @@ function startRename(personEl, personId) {
           body: JSON.stringify({ name: newName }),
         });
       } catch (err) {
-        alert(err.message);
+        showToast(err.message, "error");
       }
     }
     await refreshAll(); // labels on photos use the person name
@@ -253,7 +278,7 @@ async function finishMerge(targetId) {
     });
     if (activePersonId === mergeSourceId) activePersonId = targetId;
   } catch (err) {
-    alert(err.message);
+    showToast(err.message, "error");
   }
   cancelMerge();
   await refreshAll();
@@ -270,7 +295,7 @@ async function deletePerson(personId) {
     if (activePersonId === personId) activePersonId = null;
     if (mergeSourceId === personId) cancelMerge();
   } catch (err) {
-    alert(err.message);
+    showToast(err.message, "error");
   }
   await refreshAll();
 }
@@ -325,7 +350,7 @@ analyzeBtn.addEventListener("click", async () => {
     setAnalyzing(true);
     pollTimer = setInterval(pollProgress, 400);
   } catch (err) {
-    alert(err.message);
+    showToast(err.message, "error");
   }
 });
 
@@ -351,7 +376,7 @@ async function pollProgress() {
     clearInterval(pollTimer);
     pollTimer = null;
     setAnalyzing(false);
-    if (p.status === "error") alert(`Analysis failed: ${p.error}`);
+    if (p.status === "error") showToast(`Analysis failed: ${p.error}`, "error");
     await refreshAll();
   }
 }
@@ -366,11 +391,28 @@ function openLightbox(photo) {
   lightbox.classList.remove("hidden");
 }
 
+lightboxFrame.addEventListener("click", (e) => e.stopPropagation());
 lightbox.addEventListener("click", () => lightbox.classList.add("hidden"));
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    lightbox.classList.add("hidden");
-    cancelMerge();
+    if (!lightbox.classList.contains("hidden")) {
+      lightbox.classList.add("hidden");
+    } else {
+      cancelMerge();
+    }
+  }
+  // Lightbox navigation with arrow keys
+  if (!lightbox.classList.contains("hidden") && lastPhotos.length > 0) {
+    const match = lightboxImg.src.match(/\/api\/image\/(\d+)/);
+    if (match) {
+      const currentId = Number(match[1]);
+      const idx = lastPhotos.findIndex((p) => p.id === currentId);
+      if (e.key === "ArrowRight" && idx < lastPhotos.length - 1) {
+        openLightbox(lastPhotos[idx + 1]);
+      } else if (e.key === "ArrowLeft" && idx > 0) {
+        openLightbox(lastPhotos[idx - 1]);
+      }
+    }
   }
 });
 
@@ -389,6 +431,13 @@ document.addEventListener("keydown", (e) => {
   // Deep links: ?person=<id> pre-filters the gallery, ?photo=<id> opens the lightbox.
   const params = new URLSearchParams(location.search);
   if (params.get("person")) activePersonId = Number(params.get("person"));
+
+  // Mobile sidebar toggle
+  const sidebarToggle = document.getElementById("sidebar-toggle");
+  const sidebar = document.querySelector(".sidebar");
+  sidebarToggle.addEventListener("click", () => {
+    sidebar.classList.toggle("sidebar-open");
+  });
 
   applyViewSettings();
   await refreshAll();
